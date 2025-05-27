@@ -1,0 +1,4 @@
+/.env
+/downloads
+/node_modules
+/package-lock.json
