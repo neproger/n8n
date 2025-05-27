@@ -83,9 +83,9 @@ async function main() {
     bot.on("text", async (ctx) => {
         try {
             const userMessage = ctx.message.text;
-            console.log("Получено сообщение:", userMessage);
+            console.log("Получено сообщение:", userMessage, ctx.chat.id);
             // Отправляем ответ
-            const response = await sendToN8N(userMessage);
+            const response = await sendToN8N(userMessage, ctx.chat.id);
             ctx.reply(response);
         } catch (error) {
             console.error("Ошибка при обработке сообщения:", error.message);
@@ -164,12 +164,13 @@ main().catch((error) => {
 // отправляем POST-запрос в n8n webhook
 // npx n8n
 
-async function sendToN8N(message) {
+async function sendToN8N(message, chatId) {
   try {
-    const response = await fetch('http://localhost:5678/webhook-test/mypost', {
+    const response = await fetch('http://127.0.0.1:5678/webhook-test/tg-text', {
         method: 'POST',
         body: JSON.stringify({
-          message: message
+          message,
+          chatId
         })
     });
 
@@ -180,7 +181,9 @@ async function sendToN8N(message) {
     console.log('Ответ от n8n:', data[0].output);
     return data[0].output;
   } catch (error) {
-    console.error('Ошибка:', error.response?.data || error.message);
+    console.error('Ошибка:', error);
+    return `Ошибка: ${'Сервис недоступен'}`;
+    
   }
 }
 
