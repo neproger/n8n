@@ -115,7 +115,8 @@ async function main() {
                 // Обработка PDF-файлов
                 // ctx.reply("Чтение документа PDF...");
                 const text = await extractPdfText(localFilePath);
-                ctx.reply("Чтение документа завершено" + text.slice(0, 20) + "...");
+                ctx.reply("Чтение документа завершено" + text.slice(0, 100) + "...");
+                sendToN8N(`Загружен документ PDF: ${fileName} \n\n` + text, ctx.chat.id)
             }
         } catch (error) {
             console.error("Ошибка при обработке документа:", error.message);
@@ -166,7 +167,7 @@ main().catch((error) => {
 
 async function sendToN8N(message, chatId) {
   try {
-    const response = await fetch('http://127.0.0.1:5678/webhook-test/tg-text', {
+    const response = await fetch('http://127.0.0.1:5678/webhook/tg-text', {
         method: 'POST',
         body: JSON.stringify({
           message,
