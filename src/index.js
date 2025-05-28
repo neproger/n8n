@@ -167,7 +167,7 @@ main().catch((error) => {
 
 async function sendToN8N(message, chatId) {
   try {
-    const response = await fetch('http://127.0.0.1:5678/webhook/tg-text', {
+    const response = await fetch('http://127.0.0.1:5678/webhook-test/tg-text', {
         method: 'POST',
         body: JSON.stringify({
           message,
