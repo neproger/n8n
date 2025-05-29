@@ -6,6 +6,8 @@ import dotenv from "dotenv";
 import { Telegraf } from "telegraf";
 import pdfParse from "pdf-parse";
 
+import { WeaviateService } from '../data-service/weaviate-service.js';
+
 dotenv.config();
 // telegram-bot-api
 const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN
@@ -79,12 +81,20 @@ export async function extractPdfText(filePath) {
     return data.text;
 }
 
+
 async function main() {
+
+    const weaviateService = new WeaviateService();
+    await weaviateService.init();
+
     bot.on("text", async (ctx) => {
         try {
             const userMessage = ctx.message.text;
             console.log("Получено сообщение:", userMessage, ctx.chat.id);
             // Отправляем ответ
+            const results = await weaviateService.semanticSearch(userMessage);
+            console.log('Результаты поиска:', results);
+
             const response = await sendToN8N(userMessage, ctx.chat.id);
             ctx.reply(response);
         } catch (error) {
@@ -109,7 +119,17 @@ async function main() {
             if(mime_type == 'text/plain'){
                 // Обработка текстовых файлов
                 const text = await fs.readFile(localFilePath, 'utf-8');
-                console.log("Обработка текстовых файлов", text)
+
+                const doc = await weaviateService.addObject({
+                    content: text,
+                    url: localFilePath,
+                    title: fileName,
+                    postedAt: new Date().toISOString(),
+                    mimeType: mime_type
+                });
+                console.log('Добавлен объект:', doc);
+                ctx.reply("Чтение документа завершено: " + text.slice(0, 100) + "...");
+                sendToN8N(`Загружен документ: ${fileName} \n\n` + text, ctx.chat.id);
             }
             if(mime_type == 'application/pdf'){
                 // Обработка PDF-файлов
@@ -167,7 +187,7 @@ main().catch((error) => {
 
 async function sendToN8N(message, chatId) {
   try {
-    const response = await fetch('http://127.0.0.1:5678/webhook/tg-text', {
+    const response = await fetch('http://127.0.0.1:5678/webhook-test/tg-text', {
         method: 'POST',
         body: JSON.stringify({
           message,
