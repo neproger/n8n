@@ -12,14 +12,16 @@ export class WeaviateService {
 
         if (this.client) {
 
-            const myCollection = this.client.collections.get('Document');
+            const myCollection = this.client.collections.get('Documents');
             if (myCollection) {
-                console.log('✅ Класс Document уже существует');
-                return;
+                console.log('✅ Класс уже существует:', myCollection.name);
+                // this.client.collections.delete('Documents');
+                return this.client;
             }
-            console.log('Создание класса Document...');
+            console.log('Создание класса Documents...');
             await this.client.collections.create({
-                name: 'Document',
+                name: 'Documents',
+                description: 'Класс для хранения документов',
                 properties: [
                     {
                         name: 'content',
@@ -32,25 +34,33 @@ export class WeaviateService {
                     {
                         name: 'url',
                         dataType: configure.dataType.TEXT,
+                    },
+                    {
+                        name: 'postedAt',
+                        dataType: configure.dataType.DATE,
                     }
                 ],
-                vectorizers: vectorizer.text2vecContextionary,
-
+                vectorizers: [
+                    weaviate.configure.vectorizer.text2VecTransformers({
+                    name: 'default', // имя векторного пространства (можно опустить, если одно)
+                    sourceProperties: ['content', 'title'], // какие поля векторизовать
+                    // Можно явно указать inferenceUrl, но при вашей конфигурации это не обязательно
+                    // inferenceUrl: 'http://t2v-transformers:8080',
+                    }),
+                ],
+                // generative: weaviate.configure.generative.openAI(),
             });
 
             console.log('✅ Класс Document создан');
-            
+            return this.client;
         }
     }
 
     async addObject(data) {
         try {
-            const response = await this.client.data
-                .creator()
-                .withClassName(this.className)
-                .withProperties(data)
-                .do();
-            return response;
+            const questions = this.client.collections.get("Documents");
+            await questions.data.insert(data);
+            console.log('Объект успешно добавлен:');
         } catch (error) {
             console.error('Error adding object:', error);
             throw error;
@@ -59,15 +69,14 @@ export class WeaviateService {
 
     async semanticSearch(text, limit = 5) {
         try {
-            const myCollection = this.client.collections.get('Document');
+            const Documents = this.client.collections.get('Documents');
 
-            const result = await myCollection.query.fetchObjects({
+            const result = await Documents.query.fetchObjects({
                 query: text,
                 limit: limit,
-                vectorizer: vectorizer.text2vec-transformers,
             });
-            const response = JSON.stringify(result, null, limit);
-            console.log('Semantic search results:', response);
+            const response = JSON.stringify(result);
+            // console.log('Semantic search results:', response);
             return response;
         } catch (error) {
             console.error('Error during semantic search:', error);

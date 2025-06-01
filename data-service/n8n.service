@@ -1,0 +1,24 @@
+[Unit]
+Description=n8n service with Docker Compose and npm
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/zxc/n8n/
+ExecStartPre=/usr/bin/docker compose -f /home/zxc/n8n/data-service/docker-compose.yml up -d
+ExecStart=/bin/bash -c "npm run dev"
+ExecStartPost=/bin/bash -c "npx n8n"
+Restart=always
+User=zxc
+Environment=PATH=/usr/bin:/usr/local/bin
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
+
+###
+    sudo systemctl daemon-reload
+    sudo systemctl enable n8n
+    sudo systemctl start n8n
+###

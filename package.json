@@ -11,6 +11,8 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@langchain/core": "^0.3.57",
+    "@langchain/ollama": "^0.2.0",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
     "mime-types": "^3.0.1",
