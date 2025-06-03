@@ -5,14 +5,14 @@ import path from "path";
 import dotenv from "dotenv";
 import { Telegraf } from "telegraf";
 import pdfParse from "pdf-parse";
-
 import { WeaviateService } from '../data-service/weaviate-service.js';
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import { tool } from "@langchain/core/tools";
+import { z } from "zod";
 
 dotenv.config();
-// telegram-bot-api
-const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN
 
-const bot = new Telegraf(telegramBotToken);
+const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
 // Метод для загрузки файла
 async function downloadFile(ctx, fileId, fileName) {
@@ -84,50 +84,27 @@ const weaviateService = new WeaviateService();
 const client = await weaviateService.init();
 
 // LLM ////////////////////////////////
-import { ChatOpenAI } from "@langchain/openai";
-import { ConversationChain } from "langchain/chains";
-import { BufferMemory } from "langchain/memory";
-import { tool } from "@langchain/core/tools";
-import { z } from "zod";
 
-import {
-    HumanMessage,
-    SystemMessage,
-    AIMessage,
-    mergeMessageRuns,
-} from "@langchain/core/messages";
-
-const memory = new BufferMemory();
-await memory.chatHistory.addMessage(
-    new SystemMessage("Ты умный русский помощник Иван.")
-);
-const model = new ChatOpenAI(
+const model = new ChatGoogleGenerativeAI(
     {
-        modelName: "gpt-4.1",
-        openAIApiKey: process.env.OPENROUTER_API_KEY,
-        maxTokens: 2048,
-    },
-    {
-        basePath: 'https://openrouter.ai/api/v1',
-        baseOptions: {
-            headers: {
-                "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-                'HTTP-Referer': 'http://localhost', // Optional. Site URL for rankings on openrouter.ai.
-                'X-Title': 'AiNoteBot', // Optional. Site title for rankings on openrouter.ai.
-                "Content-Type": "application/json"
-            },
-        },
-    },
+        model: "gemini-1.5-flash", //gemini-2.5-flash-preview-05-20 gemini-1.5-flash
+        openAIApiKey: process.env.GOOGLE_API_KEY,
+    }
 );
+async function semanticSearch(query) {
+    // console.log('search_documents: ', query);
 
-// функция получения документов из weaviate
-const emptySchema = z.object({});
+    // Отправляем ответ
+    const response = await weaviateService.semanticSearch(query);
+    // console.log('Результаты поиска:', JSON.stringify(response));
+    return JSON.stringify(response);
+}
 
 async function getDocuments() {
-    const myCollection = await client.collections.get("Documents");
+    const collection = client.collections.get("Documents");
     console.log("getDocuments: запрос на получение документов");
     const documents = [];
-    for await (const item of myCollection.iterator()) {
+    for await (const item of collection.iterator()) {
         documents.push({
             id: item.uuid,
             title: item.properties.title,
@@ -137,39 +114,96 @@ async function getDocuments() {
     }
     return JSON.stringify(documents); // возвращаем массив как есть
 }
+
+
 const getDocumentsTool = tool(getDocuments, {
     name: "get_documents",
-    description: "Получить все документы из коллекции Weaviate",
+    description: `Получить все документы из коллекции Weaviate.
+Оформи ответ в таком стиле:
+1.  💾 title
+    📆 postedAt
+    📎 id
+
+2.  💾 title
+    📆 postedAt
+    📎 id
+`,
     schema: z.object({}),
 });
+
+// Создание агента
+import { SystemMessage } from "@langchain/core/messages";
+import { ConversationChain } from "langchain/chains";
+import { BufferMemory } from "langchain/memory";
+
 const llmWithTools = model.bindTools([getDocumentsTool]);
-///////////////////////////
+
+const memory = new BufferMemory();
+await memory.chatHistory.addMessage(
+    new SystemMessage("Ты умный русский помощник Иван."),
+);
 const chain = new ConversationChain({
     llm: llmWithTools,
     memory,
     schema: {
-        input: "string",
+        content: "string",
+        context: "string",
         response: "object",
     },
 });
 // LLM ////////////////////////////////////
 
+async function toolsCallingAgent(tools) {
+    for (const tool of tools) {
+        if (typeof tool.functionCall === "object") {
+            const toolName = tool.functionCall.name;
+
+            if (toolName === "search") {
+                return await semanticSearch(tool.functionCall.args.query);
+            } else if (toolName === "get_documents") {
+                return await getDocuments();
+            }
+        }
+    }
+    return null;
+}
+
 async function main() {
     bot.on("text", async (ctx) => {
         try {
-            const documents = await getDocuments();
-            console.log("Документы:", documents);
             const message = ctx.message.text;
             console.log("Я: " + message);
-            const response = await chain.call({ input: message });
-            const cleaned = response.response
-                .replace(/<think>[\s\S]*?<\/think>/g, '') // удалить блок <think>...</think>
-                .trim(); // убрать лишние пробелы и переносы
-            console.log("Машина: " + response.response ? response.response : response);
-            ctx.reply(cleaned ? cleaned : "Я не знаю, что ответить на это сообщение.");
+            const context = await semanticSearch(message);
+            const response = await chain.invoke({
+                input: {
+                    content: message,
+                    context: context,
+                }
+            });
 
-            console.log("Ответное сообщение:", response);
-
+            const aiMessage = response.response ? response.response : "Я не знаю, что ответить на это сообщение."
+            if (aiMessage.trim().startsWith('[')) {
+                try {
+                    const tools = JSON.parse(aiMessage);
+                    
+                    const toolContext = await toolsCallingAgent(tools);
+                    const response = await chain.call({
+                        input: {
+                            content: "",
+                            context: "",
+                        }
+                    });
+                    console.log("toolContext:", toolContext);
+                    console.log("Результат вызова инструмента:", response);
+                    ctx.reply(response.response);
+                } catch (err) {
+                    console.error("Ошибка при разборе ответа LLM:", err);
+                    ctx.reply("Произошла ошибка при обработке ответа. Попробуйте еще раз.");
+                }
+            } else {
+                console.log("ЛЛМ: " + aiMessage);
+                ctx.reply(aiMessage);
+            }
         } catch (error) {
             console.error("Ошибка при обработке сообщения:", error);
             ctx.reply("Произошла ошибка. Попробуйте еще раз.");

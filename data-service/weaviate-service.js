@@ -1,5 +1,7 @@
 import weaviate from 'weaviate-client';
 import { configure, vectorizer } from "weaviate-client";
+import dotenv from "dotenv";
+dotenv.config();
 
 export class WeaviateService {
     constructor() {
@@ -8,20 +10,30 @@ export class WeaviateService {
     }
 
     async init() {
-        this.client = await weaviate.connectToCustom();
+        this.client = await weaviate.connectToCustom(
+            {
+                headers: {
+                    'X-Goog-Studio-Api-Key': process.env.GOOGLE_API_KEY, // для AI Studio
+                    // или 'X-Goog-Vertex-Api-Key': process.env.VERTEX_APIKEY // для Vertex AI
+                }
+            }
+        );
 
         if (this.client) {
 
-            const myCollection = this.client.collections.get('Documents');
-            if (myCollection) {
-                console.log('✅ Класс уже существует:', myCollection.name);
+            const exists = await this.client.collections.exists('Documents');
+            if (exists) {
+                console.log('✅ Класс уже существует');
                 // this.client.collections.delete('Documents');
-                return this.client;
+                return this.client; 
             }
             console.log('Создание класса Documents...');
             await this.client.collections.create({
                 name: 'Documents',
                 description: 'Класс для хранения документов',
+                generative: weaviate.configure.generative.google({
+                    modelId: 'gemini-1.5-flash-latest',
+                }),
                 properties: [
                     {
                         name: 'content',
@@ -42,13 +54,12 @@ export class WeaviateService {
                 ],
                 vectorizers: [
                     weaviate.configure.vectorizer.text2VecTransformers({
-                    name: 'default', // имя векторного пространства (можно опустить, если одно)
-                    sourceProperties: ['content', 'title'], // какие поля векторизовать
-                    // Можно явно указать inferenceUrl, но при вашей конфигурации это не обязательно
-                    // inferenceUrl: 'http://t2v-transformers:8080',
+                        name: 'default', // имя векторного пространства (можно опустить, если одно)
+                        sourceProperties: ['content', 'title'], // какие поля векторизовать
+                        // Можно явно указать inferenceUrl, но при вашей конфигурации это не обязательно
+                        // inferenceUrl: 'http://t2v-transformers:8080',
                     }),
                 ],
-                // generative: weaviate.configure.generative.openAI(),
             });
 
             console.log('✅ Класс Document создан');
