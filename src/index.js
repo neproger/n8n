@@ -5,7 +5,8 @@ import path from "path";
 import dotenv from "dotenv";
 import { Telegraf } from "telegraf";
 import pdfParse from "pdf-parse";
-import { WeaviateService } from '../data-service/weaviate-service.js';
+import { WeaviateService } from './data-service/weaviate-service.js';
+import { generateUuid5 } from 'weaviate-client';
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
@@ -83,16 +84,8 @@ export async function extractPdfText(filePath) {
 const weaviateService = new WeaviateService();
 const client = await weaviateService.init();
 
-// LLM ////////////////////////////////
-
-const model = new ChatGoogleGenerativeAI(
-    {
-        model: "gemini-1.5-flash", //gemini-2.5-flash-preview-05-20 gemini-1.5-flash
-        openAIApiKey: process.env.GOOGLE_API_KEY,
-    }
-);
 async function semanticSearch(query) {
-    // console.log('search_documents: ', query);
+    console.log('search tool: ', query);
 
     // Отправляем ответ
     const response = await weaviateService.semanticSearch(query);
@@ -101,20 +94,58 @@ async function semanticSearch(query) {
 }
 
 async function getDocuments() {
-    const collection = client.collections.get("Documents");
-    console.log("getDocuments: запрос на получение документов");
-    const documents = [];
-    for await (const item of collection.iterator()) {
-        documents.push({
-            id: item.uuid,
-            title: item.properties.title,
-            url: item.properties.url,
-            postedAt: item.properties.postedAt,
-        });
-    }
-    return JSON.stringify(documents); // возвращаем массив как есть
+    const documentsJson = await weaviateService.getAllObjects();
+    console.log("Запрос на получение документов" + JSON.stringify(documentsJson));
+    return JSON.stringify(documentsJson); // возвращаем массив как есть
 }
 
+async function addNoteToDB(note) {
+    console.log(`Заметка:`, note.title, note.text);
+    const date = new Date().toISOString();
+
+    await weaviateService.addObject({
+        url: "Заметка",
+        title: note.title,
+        postedAt: date,
+    }, "DocumentsMeta").then(() => {
+        console.log(`DocumentsMeta добавлен объект ${note.title}: ${date}`);
+    }).catch((error) => {
+        console.error(`Ошибка при добавлении метаданных заметки: ${error.message}`);
+        return `Ошибка при добавлении метаданных заметки: ${error.message}`;
+    });
+
+    await weaviateService.addObject({
+        url: "Заметка",
+        title: note.title,
+        postedAt: date,
+        content: note.text,
+    }, "Documents").then(() => {
+        console.log(`Documents добавлен объект ${note.title}: ${date}`);
+    }).catch((error) => {
+        console.error(`Ошибка при добавлении заметки: ${error.message}`);
+        return `Ошибка при добавлении заметки: ${error.message}`;
+    });
+
+    return `Заметка "${note.title}" успешно добавлена в базу данных.`;
+}
+
+// LLM ////////////////////////////////
+
+const model = new ChatGoogleGenerativeAI(
+    {
+        model: "gemini-1.5-flash", //gemini-2.5-flash-preview-05-20 gemini-1.5-flash
+        openAIApiKey: process.env.GOOGLE_API_KEY,
+    }
+);
+
+const addNoteToDBTool = tool(addNoteToDB, {
+    name: "add_note_to_db",
+    description: `Добавить заметку в базу данных Weaviate. Придумай заголовок заметки. Сформируй текст заметки на основе запроса пользователя.`,
+    schema: z.object({
+        title: z.string().describe("Заголовок заметки"),
+        text: z.string().describe("Текст заметки"),
+    }),
+});
 
 const getDocumentsTool = tool(getDocuments, {
     name: "get_documents",
@@ -122,50 +153,100 @@ const getDocumentsTool = tool(getDocuments, {
 Оформи ответ в таком стиле:
 1.  💾 title
     📆 postedAt
-    📎 id
+    📎 url
 
 2.  💾 title
     📆 postedAt
-    📎 id
+    📎 url
 `,
     schema: z.object({}),
 });
 
-// Создание агента
-import { SystemMessage } from "@langchain/core/messages";
-import { ConversationChain } from "langchain/chains";
-import { BufferMemory } from "langchain/memory";
-
-const llmWithTools = model.bindTools([getDocumentsTool]);
-
-const memory = new BufferMemory();
-await memory.chatHistory.addMessage(
-    new SystemMessage("Ты умный русский помощник Иван."),
-);
-const chain = new ConversationChain({
-    llm: llmWithTools,
-    memory,
-    schema: {
-        content: "string",
-        context: "string",
-        response: "object",
-    },
+const semanticSearchTool = tool(semanticSearch, {
+    name: "search",
+    description: `Поиск документов в базе данных Weaviate по запросу пользователя.`,
+    schema: z.object({
+        query: z.string().describe("Запрос для поиска документов"),
+    }),
 });
+
+// Создание агента
+import { MemorySaver } from "@langchain/langgraph-checkpoint";
+import { createReactAgent } from "@langchain/langgraph/prebuilt";
+
+const checkpointer = new MemorySaver();
+
+const agent = createReactAgent({
+    llm: model,
+    tools: [getDocumentsTool, addNoteToDBTool, semanticSearchTool],
+    checkpointer,
+    prompt: "Ты умный ассистент, Ваня. Ты можешь использовать инструменты. Для получения документов getDocumentsTool. Для добавления заметки в базу данных addNoteToDBTool. Для поиска документов в базе данных Weaviate по запросу пользователя semanticSearchTool.",
+
+});
+
 // LLM ////////////////////////////////////
 
-async function toolsCallingAgent(tools) {
-    for (const tool of tools) {
-        if (typeof tool.functionCall === "object") {
-            const toolName = tool.functionCall.name;
+import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 
-            if (toolName === "search") {
-                return await semanticSearch(tool.functionCall.args.query);
-            } else if (toolName === "get_documents") {
-                return await getDocuments();
-            }
+export async function extractPdfPages(filePath) {
+    const pdfData = await fs.readFile(filePath);
+    const pdfDataArray = new Uint8Array(pdfData);
+    const loadingTask = pdfjsLib.getDocument({
+        data: pdfDataArray,
+        standardFontDataUrl: path.join(
+            import.meta.dirname,
+            "node_modules/pdfjs-dist/standard_fonts/"
+        ),
+    });
+    const pdf = await loadingTask.promise;
+
+    const pages = [];
+
+    for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const opList = await page.getOperatorList();
+        if (opList.fnArray.length > 0) {
+            console.log(`Page ${i} opList:`, opList.fnArray);
         }
+        const textContent = await page.getTextContent();
+        const pageText = textContent.items.map(item => item.str).join(' ');
+        pages.push(pageText);
     }
-    return null;
+
+    return pages; // массив строк, по одной на страницу
+}
+
+async function addPDFtoDB(fileName, localFilePath, chatId, bot) {
+    const postedAt = new Date().toISOString();
+    // Генерируем UUID на основе ключевых свойств (например, documentId)
+    const object_uuid = generateUuid5(JSON.stringify({ documentId: localFilePath }));
+
+    const docMetas = client.collections.get('DocumentsMeta');
+
+    await weaviateService.addObject({
+        url: localFilePath,
+        title: fileName,
+        postedAt,
+    }, "DocumentsMeta");
+    console.log(`Метаданные документа "${fileName}" успешно добавлены в базу данных.`);
+
+    const pdfPages = await extractPdfPages(localFilePath);
+    for (let i = 0; i < pdfPages.length; i++) {
+
+        await weaviateService.addObject({
+            content: `Page ${i + 1}: ` + pdfPages[i],
+            url: localFilePath,
+            title: fileName,
+            postedAt,
+            page: i + 1, // добавляем номер страницы
+        }).then(() => {
+            console.log(`Page ${i + 1}: ${pdfPages[i].slice(0, 30)}...`);
+        });
+
+    }
+
+    const message = `Документ "${fileName}" успешно добавлен в базу данных.`;
+    bot.telegram.sendMessage(chatId, message);
 }
 
 async function main() {
@@ -173,37 +254,17 @@ async function main() {
         try {
             const message = ctx.message.text;
             console.log("Я: " + message);
-            const context = await semanticSearch(message);
-            const response = await chain.invoke({
-                input: {
-                    content: message,
-                    context: context,
-                }
-            });
+            const chatId = ctx.chat.id;
+            const config = { configurable: { thread_id: chatId } };
+            const result = await agent.invoke({
+                messages: [{ role: "user", content: message }]
+            }, config);
+            // console.log("response LLM:", result);
 
-            const aiMessage = response.response ? response.response : "Я не знаю, что ответить на это сообщение."
-            if (aiMessage.trim().startsWith('[')) {
-                try {
-                    const tools = JSON.parse(aiMessage);
-                    
-                    const toolContext = await toolsCallingAgent(tools);
-                    const response = await chain.call({
-                        input: {
-                            content: "",
-                            context: "",
-                        }
-                    });
-                    console.log("toolContext:", toolContext);
-                    console.log("Результат вызова инструмента:", response);
-                    ctx.reply(response.response);
-                } catch (err) {
-                    console.error("Ошибка при разборе ответа LLM:", err);
-                    ctx.reply("Произошла ошибка при обработке ответа. Попробуйте еще раз.");
-                }
-            } else {
-                console.log("ЛЛМ: " + aiMessage);
-                ctx.reply(aiMessage);
-            }
+            const lastMessage = result.messages.at(-1); // или result.messages[result.messages.length - 1]
+
+            console.log("ЛЛМ: " + lastMessage.content);
+            ctx.reply(lastMessage.content);
         } catch (error) {
             console.error("Ошибка при обработке сообщения:", error);
             ctx.reply("Произошла ошибка. Попробуйте еще раз.");
@@ -212,6 +273,7 @@ async function main() {
     // Обработчик документов
     bot.on("document", async (ctx) => {
         try {
+            const chatId = ctx.chat.id;
             const fileId = ctx.message.document.file_id;
             const fileName = ctx.message.document.file_name || `document_${ctx.message.message_id}`;
             const mime_type = ctx.message.document.mime_type;
@@ -230,29 +292,14 @@ async function main() {
             if (ext == 'txt' || ext == 'md' || ext == 'ini') {
                 // Обработка текстовых файлов
                 const text = await fs.readFile(localFilePath, 'utf-8');
-
-                const doc = await weaviateService.addObject({
-                    content: text,
-                    url: localFilePath,
-                    title: fileName,
-                    postedAt: new Date().toISOString(),
-                    mimeType: mime_type
-                });
-                console.log('Добавлен объект:', doc);
                 ctx.reply("Чтение документа завершено: " + text.slice(0, 100) + "...");
+                addToDB(text, fileName, localFilePath, chatId, bot);
             }
             if (mime_type == 'application/pdf') {
                 // Обработка PDF-файлов
-                // ctx.reply("Чтение документа PDF...");
-                const text = await extractPdfText(localFilePath);
-                const doc = await weaviateService.addObject({
-                    content: text,
-                    url: localFilePath,
-                    title: fileName,
-                    postedAt: new Date().toISOString()
-                });
-                console.log('Добавлен объект:', doc);
-                ctx.reply("Чтение документа завершено" + text.slice(0, 100) + "...");
+
+                addPDFtoDB(fileName, localFilePath, chatId, bot);
+                ctx.reply("Обработка документа: " + fileName);
             }
         } catch (error) {
             console.error("Ошибка при обработке документа:", error.message);

@@ -19,7 +19,7 @@
     "mime-types": "^3.0.1",
     "n8n": "^1.94.1",
     "nodemon": "^3.1.10",
-    "pdf-parse": "^1.1.1",
+    "pdfjs-dist": "^5.3.31",
     "telegraf": "^4.16.3",
     "weaviate-client": "^3.5.5"
   }
